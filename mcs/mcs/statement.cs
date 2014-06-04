@@ -1198,7 +1198,10 @@ namespace Mono.CSharp {
 						var async_type = storey.ReturnType;
 
 						if (async_type == null && async_block.ReturnTypeInference != null) {
-							async_block.ReturnTypeInference.AddCommonTypeBoundAsync (expr.Type);
+							if (expr.Type.Kind == MemberKind.Void && !(this is ContextualReturn))
+								ec.Report.Error (4029, loc, "Cannot return an expression of type `void'");
+							else
+								async_block.ReturnTypeInference.AddCommonTypeBoundAsync (expr.Type);
 							return true;
 						}
 
@@ -1214,18 +1217,14 @@ namespace Mono.CSharp {
 							if (this is ContextualReturn)
 								return true;
 
-							// Same error code as .NET but better error message
 							if (async_block.DelegateType != null) {
-								ec.Report.Error (1997, loc,
-									"`{0}': A return keyword must not be followed by an expression when async delegate returns `Task'. Consider using `Task<T>' return type",
-									async_block.DelegateType.GetSignatureForError ());
+								ec.Report.Error (8031, loc,
+									"Async lambda expression or anonymous method converted to a `Task' cannot return a value. Consider returning `Task<T>'");
 							} else {
 								ec.Report.Error (1997, loc,
 									"`{0}': A return keyword must not be followed by an expression when async method returns `Task'. Consider using `Task<T>' return type",
 									ec.GetSignatureForError ());
-
 							}
-
 							return false;
 						}
 
@@ -1241,12 +1240,9 @@ namespace Mono.CSharp {
 						}
 					}
 				} else {
-					// Same error code as .NET but better error message
 					if (block_return_type.Kind == MemberKind.Void) {
-						ec.Report.Error (127, loc,
-							"`{0}': A return keyword must not be followed by any expression when delegate returns void",
-							am.GetSignatureForError ());
-
+						ec.Report.Error (8030, loc,
+							"Anonymous function or lambda expression converted to a void returning delegate cannot return a value");
 						return false;
 					}
 
@@ -6316,9 +6312,16 @@ namespace Mono.CSharp {
 			public override bool Resolve (BlockContext bc)
 			{
 				ctch.Filter = ctch.Filter.Resolve (bc);
-				var c = ctch.Filter as Constant;
-				if (c != null && !c.IsDefaultValue) {
-					bc.Report.Warning (7095, 1, ctch.Filter.Location, "Exception filter expression is a constant");
+
+				if (ctch.Filter != null) {
+					if (ctch.Filter.ContainsEmitWithAwait ()) {
+						bc.Report.Error (7094, ctch.Filter.Location, "The `await' operator cannot be used in the filter expression of a catch clause");
+					}
+
+					var c = ctch.Filter as Constant;
+					if (c != null && !c.IsDefaultValue) {
+						bc.Report.Warning (7095, 1, ctch.Filter.Location, "Exception filter expression is a constant");
+					}
 				}
 
 				return true;
@@ -6403,7 +6406,8 @@ namespace Mono.CSharp {
 				}
 			}
 
-			Block.Emit (ec);
+			if (!Block.HasAwait)
+				Block.Emit (ec);
 		}
 
 		void EmitCatchVariableStore (EmitContext ec)
@@ -6424,19 +6428,19 @@ namespace Mono.CSharp {
 			}
 		}
 
-		public override bool Resolve (BlockContext ec)
+		public override bool Resolve (BlockContext bc)
 		{
-			using (ec.Set (ResolveContext.Options.CatchScope)) {
+			using (bc.Set (ResolveContext.Options.CatchScope)) {
 				if (type_expr != null) {
-					type = type_expr.ResolveAsType (ec);
+					type = type_expr.ResolveAsType (bc);
 					if (type == null)
 						return false;
 
-					if (type.BuiltinType != BuiltinTypeSpec.Type.Exception && !TypeSpec.IsBaseClass (type, ec.BuiltinTypes.Exception, false)) {
-						ec.Report.Error (155, loc, "The type caught or thrown must be derived from System.Exception");
+					if (type.BuiltinType != BuiltinTypeSpec.Type.Exception && !TypeSpec.IsBaseClass (type, bc.BuiltinTypes.Exception, false)) {
+						bc.Report.Error (155, loc, "The type caught or thrown must be derived from System.Exception");
 					} else if (li != null) {
 						li.Type = type;
-						li.PrepareAssignmentAnalysis (ec);
+						li.PrepareAssignmentAnalysis (bc);
 
 						// source variable is at the top of the stack
 						Expression source = new EmptyExpression (li.Type);
@@ -6456,7 +6460,7 @@ namespace Mono.CSharp {
 				}
 
 				Block.SetCatchBlock ();
-				return Block.Resolve (ec);
+				return Block.Resolve (bc);
 			}
 		}
 
@@ -6602,6 +6606,7 @@ namespace Mono.CSharp {
 		public Block Block;
 		List<Catch> clauses;
 		readonly bool inside_try_finally;
+		List<Catch> catch_sm;
 
 		public TryCatch (Block block, List<Catch> catch_clauses, Location l, bool inside_try_finally)
 			: base (l)
@@ -6645,6 +6650,13 @@ namespace Mono.CSharp {
 				var c = clauses[i];
 
 				ok &= c.Resolve (bc);
+
+				if (c.Block.HasAwait) {
+					if (catch_sm == null)
+						catch_sm = new List<Catch> ();
+
+					catch_sm.Add (c);
+				}
 
 				if (c.Filter != null)
 					continue;
@@ -6702,11 +6714,49 @@ namespace Mono.CSharp {
 
 			Block.Emit (ec);
 
-			foreach (Catch c in clauses)
+			LocalBuilder state_variable = null;
+			foreach (Catch c in clauses) {
 				c.Emit (ec);
+
+				if (catch_sm != null) {
+					if (state_variable == null)
+						state_variable = ec.GetTemporaryLocal (ec.Module.Compiler.BuiltinTypes.Int);
+
+					var index = catch_sm.IndexOf (c);
+					if (index < 0)
+						continue;
+
+					ec.EmitInt (index + 1);
+					ec.Emit (OpCodes.Stloc, state_variable);
+				}
+			}
 
 			if (!inside_try_finally)
 				ec.EndExceptionBlock ();
+
+			if (state_variable != null) {
+				ec.Emit (OpCodes.Ldloc, state_variable);
+
+				var labels = new Label [catch_sm.Count + 1];
+				for (int i = 0; i < labels.Length; ++i) {
+					labels [i] = ec.DefineLabel ();
+				}
+
+				var end = ec.DefineLabel ();
+				ec.Emit (OpCodes.Switch, labels);
+
+				// 0 value is default label
+				ec.MarkLabel (labels [0]);
+
+				for (int i = 0; i < catch_sm.Count; ++i) {
+					ec.Emit (OpCodes.Br, end);
+
+					ec.MarkLabel (labels [i + 1]);
+					catch_sm [i].Block.Emit (ec);
+				}
+
+				ec.MarkLabel (end);
+			}
 		}
 
 		protected override bool DoFlowAnalysis (FlowAnalysisContext fc)

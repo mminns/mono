@@ -481,7 +481,7 @@ AC_CHECK_HEADERS(wchar.h)
 AC_CHECK_HEADERS(ieeefp.h)
 AC_MSG_CHECKING(for isinf)
 AC_TRY_LINK([#include <math.h>], [
-	int f = isinf (1);
+	int f = isinf (1.0);
 ], [
 	AC_MSG_RESULT(yes)
 	AC_DEFINE(HAVE_ISINF, 1, [isinf available])
@@ -1087,6 +1087,7 @@ case "x$gc" in
 		AC_MSG_WARN("Compiling mono without GC.")
 		AC_DEFINE_UNQUOTED(DEFAULT_GC_NAME, "none", [GC description])
 		AC_DEFINE(HAVE_NULL_GC,1,[No GC support.])
+		gc_msg="none"
 		;;
 	*)
 		AC_MSG_ERROR([Invalid argument to --with-gc.])
