@@ -45,8 +45,10 @@ namespace Mono.Tools {
 	class MozRoots {
 
 		private const string defaultUrl = "http://mxr.mozilla.org/seamonkey/source/security/nss/lib/ckfw/builtins/certdata.txt?raw=1";
+                private const int defaultTimeout = 100000;
 
 		static string url;
+		static int timeout;
 		static string inputFile;
 		static string pkcs7filename;
 		static bool import;
@@ -79,10 +81,14 @@ namespace Mono.Tools {
 				} else {
 					WriteLine ("Downloading from '{0}'...", url);
 					HttpWebRequest req = (HttpWebRequest) WebRequest.Create (url);
-					req.Timeout = 10000;
+                                        if(timeout != defaultTimeout) {
+						WriteLine ("Timeout set to '{0}ms'", timeout);
+                                        }
+					req.Timeout = timeout;
 					return req.GetResponse ().GetResponseStream ();
 				}
-			} catch {
+			} catch (Exception e) {
+				WriteLine("Failed to retrieve file: {0}", e.Message);
 				return null;
 			}
 		}
@@ -224,6 +230,7 @@ namespace Mono.Tools {
 
 			// set defaults
 			url = defaultUrl;
+                        timeout = defaultTimeout;
 			confirmAddition = true;
 			confirmRemoval = true;
 
@@ -233,6 +240,12 @@ namespace Mono.Tools {
 					if (i >= args.Length - 1)
 						return false;
 					url = args[++i];
+					break;
+				case "--timeout":
+					if (i >= args.Length - 1)
+						return false;
+                                        if(!Int32.TryParse(args[++i], out timeout))
+                                                return false;
 					break;
 				case "--file":
 					if (i >= args.Length - 1)
@@ -299,6 +312,7 @@ namespace Mono.Tools {
 			Console.WriteLine (" --machine\tImport the certificate in the machine trust store.");
 			Console.WriteLine ("\t\tThe default is to import into the user store.");
 			Console.WriteLine (" --quiet\tLimit console output to errors and confirmations messages.");
+			Console.WriteLine (" --timeout\t(ms) Override the default timeout of 100,000ms, when making web requests.");
 		}
 
 		static void WriteLine (string str)
