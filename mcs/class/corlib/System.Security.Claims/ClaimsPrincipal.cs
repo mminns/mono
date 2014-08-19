@@ -59,7 +59,7 @@ namespace System.Security.Claims {
 			if (identities == null)
 				throw new ArgumentNullException ("identities");
 			
-			identities = new List<ClaimsIdentity> (identities);
+			this.identities = new List<ClaimsIdentity> (identities);
 		}
 
 		public ClaimsPrincipal (IIdentity identity)
@@ -185,6 +185,29 @@ namespace System.Security.Claims {
 					return true;
 			}
 			return false;
+		}
+
+		public virtual bool HasClaim (string type, string value)
+		{
+			foreach(var claim in Claims){
+				if (claim.Type == type && claim.Value == value)
+					return true;
+			}
+			return false;
+		}
+
+		public virtual Claim FindFirst (string type)
+		{
+			if (type == null)
+				throw new ArgumentNullException ("type");
+			return FindFirst(x => x.Type == type);
+		}
+
+		public virtual IEnumerable<Claim> FindAll (string type)
+		{
+			if (type == null)
+				throw new ArgumentNullException ("type");
+			return FindAll(x => x.Type == type);
 		}
 		
 	}

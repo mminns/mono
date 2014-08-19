@@ -393,7 +393,7 @@ par_alloc_from_fragment (SgenFragmentAllocator *allocator, SgenFragment *frag, s
 		 * allocating from this dying fragment as it doesn't respect SGEN_MAX_NURSERY_WASTE
 		 * when doing second chance allocation.
 		 */
-		if (sgen_get_nursery_clear_policy () == CLEAR_AT_TLAB_CREATION && claim_remaining_size (frag, end)) {
+		if ((sgen_get_nursery_clear_policy () == CLEAR_AT_TLAB_CREATION || sgen_get_nursery_clear_policy () == CLEAR_AT_TLAB_CREATION_DEBUG) && claim_remaining_size (frag, end)) {
 			sgen_clear_range (end, frag->fragment_end);
 			HEAVY_STAT (InterlockedExchangeAdd (&stat_wasted_bytes_trailer, frag->fragment_end - end));
 #ifdef NALLOC_DEBUG
@@ -414,7 +414,7 @@ par_alloc_from_fragment (SgenFragmentAllocator *allocator, SgenFragment *frag, s
 				/*frag->next read must happen before the first CAS*/
 				mono_memory_write_barrier ();
 
-				/*Fail if the next done is removed concurrently and its CAS wins */
+				/*Fail if the next node is removed concurrently and its CAS wins */
 				if (InterlockedCompareExchangePointer ((volatile gpointer*)&frag->next, mask (next, 1), next) != next) {
 					continue;
 				}
@@ -424,7 +424,7 @@ par_alloc_from_fragment (SgenFragmentAllocator *allocator, SgenFragment *frag, s
 			mono_memory_write_barrier ();
 
 			/* Fail if the previous node was deleted and its CAS wins */
-			if (InterlockedCompareExchangePointer ((volatile gpointer*)prev_ptr, next, frag) != frag) {
+			if (InterlockedCompareExchangePointer ((volatile gpointer*)prev_ptr, unmask (next), frag) != frag) {
 				prev_ptr = find_previous_pointer_fragment (allocator, frag);
 				continue;
 			}
@@ -651,7 +651,7 @@ sgen_clear_allocator_fragments (SgenFragmentAllocator *allocator)
 void
 sgen_clear_nursery_fragments (void)
 {
-	if (sgen_get_nursery_clear_policy () == CLEAR_AT_TLAB_CREATION) {
+	if (sgen_get_nursery_clear_policy () == CLEAR_AT_TLAB_CREATION || sgen_get_nursery_clear_policy () == CLEAR_AT_TLAB_CREATION_DEBUG) {
 		sgen_clear_allocator_fragments (&mutator_allocator);
 		sgen_minor_collector.clear_fragments ();
 	}
@@ -714,6 +714,8 @@ add_nursery_frag (SgenFragmentAllocator *allocator, size_t frag_size, char* frag
 		/* memsetting just the first chunk start is bound to provide better cache locality */
 		if (sgen_get_nursery_clear_policy () == CLEAR_AT_GC)
 			memset (frag_start, 0, frag_size);
+		else if (sgen_get_nursery_clear_policy () == CLEAR_AT_TLAB_CREATION_DEBUG)
+			memset (frag_start, 0xff, frag_size);
 
 #ifdef NALLOC_DEBUG
 		/* XXX convert this into a flight record entry
@@ -829,7 +831,7 @@ sgen_build_nursery_fragments (GCMemSection *nursery_section, void **start, size_
 	if (!unmask (mutator_allocator.alloc_head)) {
 		SGEN_LOG (1, "Nursery fully pinned (%zd)", num_entries);
 		for (i = 0; i < num_entries; ++i) {
-			SGEN_LOG (3, "Bastard pinning obj %p (%s), size: %d", start [i], sgen_safe_name (start [i]), sgen_safe_object_get_size (start [i]));
+			SGEN_LOG (3, "Bastard pinning obj %p (%s), size: %zd", start [i], sgen_safe_name (start [i]), sgen_safe_object_get_size (start [i]));
 		}
 	}
 	return fragment_total;
